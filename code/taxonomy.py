@@ -100,6 +100,27 @@ _RULES: list[tuple] = [
      "on the profile, re-approving the same profile is impossible: either "
      "restore the environment, or mint new profile identities"),
 
+    # ---- A mapping gap: the SOURCE never provided something the schema
+    #      requires. Tested before the R4 rules, because it arrives carrying
+    #      the CARDINALITY label it would fire as at commit -- and that label
+    #      classifies as mechanical, which is right for a built bundle and
+    #      wrong here. On a built bundle the catalog tells you the shape of the
+    #      missing triple. When the source never stated the value, nobody but
+    #      the experimenter knows it, and the catalog cannot help.
+    ("mapping_gap", r"^(materials: )?CARDINALITY \w+\.\w+$",
+     "R4_GRAPH_SHAPE", "data_fix", "unknown",
+     "the schema requires this and the source document does not state it. The "
+     "shape of what is missing is known; the value is not, and is not ours to "
+     "choose. ASK the provider"),
+    ("mapping_gap", r".",
+     "R4_GRAPH_SHAPE", "data_fix", "unknown",
+     "the source does not provide something the schema requires"),
+    ("fabrication", r".",
+     "R3_PAYLOAD_CONTRACT", "escalate", "unknown",
+     "a claim about the source did not check out against the source text. "
+     "Nothing is built from it. Worth a look: it is either a reading error or "
+     "a value with nothing behind it"),
+
     # ---- R8: no contract exists for this technique. Tested before R3,
     #      because "Unknown family" would otherwise read as a payload defect.
     (None, r"^(Unknown family|Invalid family|Unknown instrument family)$",

@@ -234,12 +234,78 @@ def verify(answers, source_text, required):
     return checked, problems
 
 
+def file_records(source: Path, cls: str, absent, problems, model) -> int:
+    """Turn the gaps into decision records a person can answer in a batch.
+
+    An absent property is filed as the rule it WOULD fire as at commit --
+    `CARDINALITY <Class>.<prop>` -- on the `mapping_gap` channel. The label
+    makes it the same thing the probe would report from a built bundle, so one
+    taxonomy and one review flow covers both; the channel keeps the confidence
+    honest, because a value the source never stated is not ours to choose.
+    """
+    import decisions
+    from taxonomy import classify
+
+    digests = decisions.bundle_digests(source)
+    already = decisions.answered_logical_ids()
+    filed = 0
+
+    for item in absent:
+        prop = item.get("property")
+        label = f"CARDINALITY {cls}.{prop}"
+        rejection = {
+            "stage": "mapping", "channel": "mapping_gap",
+            "rule_label": label, "message": f"materials: {label}",
+            "source_note": item.get("note"),
+            "target_class": cls, "target_property": prop,
+        }
+        record = decisions.make_record(rejection, classify(rejection), source,
+                                       digests=digests,
+                                       env={"model": model, "step": "mapping"})
+        if record["logical_id"] in already or decisions.load(record["id"]):
+            continue
+        record["question"] = {
+            "text": f"The schema requires {cls}.{prop}, and "
+                    f"{source.name} does not state it. What is it, or should "
+                    f"this record be built without it?",
+            "why_not_proposing": item.get("note")
+                    or "the source does not state it, so any value would be "
+                       "ours rather than the provider's",
+        }
+        record["unresolved"] = ["value_not_stated_in_source"]
+        decisions.save(record)
+        filed += 1
+
+    for p in problems:
+        rejection = {"stage": "mapping", "channel": "fabrication",
+                     "message": f"{p['kind']}: {p['detail']}",
+                     "target_class": cls,
+                     "target_property": p.get("property")}
+        record = decisions.make_record(rejection, classify(rejection), source,
+                                       digests=digests,
+                                       env={"model": model, "step": "mapping"})
+        if decisions.load(record["id"]):
+            continue
+        record["question"] = {
+            "text": f"A claim about {p.get('property')} did not check out "
+                    f"against {source.name}: {p['detail']}. Nothing was built "
+                    f"from it. Is the property genuinely absent?",
+            "why_not_proposing": "a claim with nothing behind it in the source",
+        }
+        record["unresolved"] = ["claim_failed_verification"]
+        decisions.save(record)
+        filed += 1
+    return filed
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("source", type=Path)
     ap.add_argument("--class", dest="cls", required=True)
     ap.add_argument("--model", default=None)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--file", action="store_true",
+                    help="file the gaps as decision records")
     ap.add_argument("--max-tokens", type=int, default=24000,
                     help="budget for ONE reply. Reasoning is charged "
                          "against it, and on this endpoint reasoning "
@@ -321,6 +387,12 @@ def main(argv):
         print(f"\n  REJECTED ({len(problems)}) -- claims that did not check out:")
         for p in problems:
             print(f"    {p['kind']:<22} {p.get('property')}: {p['detail'][:68]}")
+
+    if a.file:
+        filed = file_records(a.source, a.cls, absent, problems, model)
+        print(f"\n  filed {filed} decision record(s)")
+        if filed:
+            print(f"  Read them:  mia.py review --bundle {a.source.name}")
 
     out = {
         "source": str(a.source), "class": a.cls, "model": model,

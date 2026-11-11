@@ -76,6 +76,14 @@ def _norm_target(rejection):
 
 
 def bundle_digests(bundle: Path) -> dict:
+    """Digests of what a decision was made against -- a bundle or one file.
+
+    A mapping decision is made against a SOURCE DOCUMENT, not a bundle, and
+    `rglob` on a file returns nothing: every such record would have carried an
+    empty digest map and so an identical fingerprint.
+    """
+    if bundle.is_file():
+        return {bundle.name: hashlib.sha256(bundle.read_bytes()).hexdigest()}
     out = {}
     for p in sorted(bundle.rglob("*")):
         if p.is_file():
