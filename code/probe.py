@@ -38,6 +38,13 @@ ROOT = HERE.parent
 KIT = Path(os.environ.get("MIA_KIT_DIR") or ROOT / "data" / "kit")
 MODEL = KIT / "model"
 
+if not (MODEL / "characterization").is_dir():
+    sys.exit(
+        f"  no kit at {KIT}\n"
+        f"  The schema and ingestion kit are a collaborator's unreleased work\n"
+        f"  and are not in this repository. Set MIA_KIT_DIR to a local copy,\n"
+        f"  so that $MIA_KIT_DIR/model/postgresql/schema.sql exists.")
+
 sys.path[:0] = [str(MODEL), str(MODEL / "characterization")]
 
 MAX_BYTES = 16777216          # the kit's own per-artifact limit

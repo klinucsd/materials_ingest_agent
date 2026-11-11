@@ -186,25 +186,25 @@ _RULES: list[tuple] = [
      "subjects, so the edit is usually determinable"),
 
     # ---- R3: the payload document vs its contract.
-    ("jsonschema", r"^'[^']+' is a required property$",
+    (None, r"^'[^']+' is a required property\b",
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",
      "a required key is absent. Where the contract pins one permitted value "
      "for it, the proposal states that value"),
-    ("jsonschema", r"was expected$|is not one of|does not match|"
-                   r"is not valid under any of the given schemas",
+    (None, r"was expected\b|is not one of|does not match|"
+           r"is not valid under any of the given schemas",
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",
      "the contract permits an enumerated or constant value and the document "
      "carries a different one"),
-    ("jsonschema", r"^Additional propert",
+    (None, r"^Additional propert",
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",
      "the contract is closed; the extra key either belongs elsewhere or "
      "cannot be carried"),
-    ("jsonschema", r"is not of type|is too short|is too long|"
-                   r"has non-unique elements",
+    (None, r"is not of type|is too short|is too long|"
+           r"has non-unique elements",
      "R3_PAYLOAD_CONTRACT", "data_fix", "inferred",
      "the shape is wrong in a way the contract describes; the correction is "
      "usually evident but may hide a units or convention problem"),
-    ("jsonschema", r"less than|greater than|minimum|maximum",
+    (None, r"less than|greater than|minimum|maximum",
      "R3_PAYLOAD_CONTRACT", "data_fix", "unknown",
      "a VALUE is outside the contract's bounds. That may be a bad reading, a "
      "unit, a sign convention, or a real result the contract did not "
@@ -244,8 +244,10 @@ _RULES: list[tuple] = [
      "a semantic check on the payload that this table does not recognise; "
      "treat the value as the experimenter's until told otherwise"),
     ("seal_failed", r".",
-     "R3_PAYLOAD_CONTRACT", "data_fix", "inferred",
-     "sealing this dataset's payload failed; the wrapped message says why"),
+     "R3_PAYLOAD_CONTRACT", "data_fix", "unknown",
+     "sealing this dataset's payload failed for a reason this table does not "
+     "recognise. The specific causes are matched above, so reaching here means "
+     "something new: ask, do not propose"),
 
     # ---- R4: graph shape. The label names the class and property, and the
     #      catalog gives domain, range and parent, so these are mechanical.
@@ -312,11 +314,33 @@ UNCLASSIFIED = Verdict(
     "rejection must never be treated as a clean result or quietly fixed")
 
 
+# A wrapped exception names where it surfaced, not what it is. The sealing
+# step re-raises whatever admit() raised, so "No owner-approved schema for this
+# profile" arrived as `seal_failed: ValueError: No owner-approved...` and was
+# classified by the wrapper as a payload data_fix -- sending a person to edit
+# data when what is needed is an owner approval. Unwrap before classifying.
+_WRAPPED = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)): (.+)$",
+                      re.S)
+
+
+def unwrap(message: str) -> str:
+    """Strip one layer of `ExceptionType: ` from a re-raised message."""
+    seen = set()
+    out = (message or "").strip()
+    while out not in seen:
+        seen.add(out)
+        m = _WRAPPED.match(out)
+        if not m:
+            break
+        out = m.group(1).strip()
+    return out
+
+
 def classify(rejection: dict) -> Verdict:
     """Classify one rejection from probe.py. Never raises."""
     channel = rejection.get("channel") or ""
     label = rejection.get("rule_label")
-    subject = label or (rejection.get("message") or "")
+    subject = label or unwrap(rejection.get("message") or "")
     for want_channel, pattern, cls, decision, confidence, why in _COMPILED:
         if want_channel is not None and want_channel != channel:
             continue

@@ -183,3 +183,28 @@ def test_a_probe_gap_escalates_rather_than_reading_as_clean():
     v = classify({"channel": "probe_unsupported",
                   "message": "SOME_RULE: UndefinedColumn"})
     assert v["decision_type"] == "escalate"
+
+
+def test_a_wrapped_error_is_classified_by_what_it_IS():
+    """A re-raised exception names where it surfaced, not what it is.
+
+    The sealing step re-raises whatever admit() raised, so an owner-approval
+    problem arrived as `seal_failed: ValueError: No owner-approved schema...`
+    and was classified by the wrapper as a payload data_fix -- which would send
+    a person to edit data when an owner approval is what is needed.
+    """
+    v = classify({"channel": "seal_failed",
+                  "message": "ValueError: No owner-approved schema for this profile"})
+    assert v["class"] == "R1_CONTRACT_NOT_APPROVED"
+    assert v["decision_type"] == "owner_approval"
+
+    v2 = classify({"channel": "seal_failed",
+                   "message": "ValidationError: 'x' is a required property "
+                              "Failed validating 'required'"})
+    assert v2["confidence"] == "mechanical", "trailing explanation broke the match"
+
+
+def test_an_unrecognised_seal_failure_is_not_proposable():
+    v = classify({"channel": "seal_failed",
+                  "message": "RuntimeError: something nobody has seen"})
+    assert not may_propose(v), "an unrecognised failure must be asked about"
