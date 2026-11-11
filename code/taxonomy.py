@@ -211,6 +211,19 @@ _RULES: list[tuple] = [
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",
      "a required key is absent. Where the contract pins one permitted value "
      "for it, the proposal states that value"),
+    # A UNIT is tested before the general const rule, and is never mechanical.
+    # The contract names the one permitted unit, so "change micrometre to
+    # nanometre" looks determinable -- and editing the declaration while the
+    # NUMBERS stay in micrometres yields data wrong by a factor of a thousand
+    # that passes every later check. The kit says so itself: "unit conversions
+    # require explicit upstream processing". Converting the data is a decision
+    # about the data, and whoever measured it decides.
+    (None, r"^'urn:feder:worked:unit:[^']+' was expected",
+     "R3_PAYLOAD_CONTRACT", "data_fix", "unknown",
+     "the contract pins a different unit than the source states. Do NOT edit "
+     "the declaration to match: that leaves the numbers in the source's unit "
+     "and silently rescales the data. The values must be converted upstream, "
+     "which is the provider's decision, not a contract lookup"),
     (None, r"was expected\b|is not one of|does not match|"
            r"is not valid under any of the given schemas",
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",

@@ -208,3 +208,25 @@ def test_an_unrecognised_seal_failure_is_not_proposable():
     v = classify({"channel": "seal_failed",
                   "message": "RuntimeError: something nobody has seen"})
     assert not may_propose(v), "an unrecognised failure must be asked about"
+
+
+def test_a_unit_mismatch_is_never_proposable():
+    """Editing the declaration to match the contract rescales the data.
+
+    The contract pins one unit, so "change micrometre to nanometre" reads as a
+    lookup. But the NUMBERS stay in micrometres, the data is then wrong by a
+    thousand, and every later check passes. The kit says it plainly: unit
+    conversions require explicit upstream processing.
+    """
+    v = classify({"channel": "jsonschema",
+                  "message": "'urn:feder:worked:unit:nanometre' was expected",
+                  "json_pointer": "/units/depth_nm"})
+    assert v["confidence"] == "unknown"
+    assert not may_propose(v), "a unit mismatch must be asked, not proposed"
+
+
+def test_a_non_unit_const_is_still_proposable():
+    """The narrowing is about units, not about const violations generally."""
+    v = classify({"channel": "jsonschema",
+                  "message": "'0.5.0-payload' was expected"})
+    assert v["confidence"] == "mechanical"

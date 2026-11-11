@@ -60,7 +60,32 @@ for f in $staged; do
     #
     # Tier 1 -- strings that appear only in his own DDL or payload documents.
     # One occurrence is enough.
-    bulk=$(grep -ioE "CREATE SCHEMA materials|CREATE TABLE materials\.|urn:feder:worked:|fm:payloadProfile|0\.5\.0-payload|characterization_family AS ENUM" "$f" 2>/dev/null | sort -u | head -3 | tr '\n' ' ')
+    # Tier 1 holds ONLY strings that cannot appear in code of ours: his DDL.
+    # urn:feder:worked:, fm:payloadProfile and the contract version used to be
+    # here, and they blocked our own taxonomy -- which has to MATCH those
+    # strings in a regex in order to classify a rejection that mentions them.
+    # They moved to tier 2, where a handful is a reference and hundreds is a
+    # copy.
+    bulk=$(grep -ioE "CREATE SCHEMA materials|CREATE TABLE materials\.|characterization_family AS ENUM|LANGUAGE plpgsql" "$f" 2>/dev/null | sort -u | head -3 | tr '\n' ' ')
+    # His DATA FILES are smaller than his schema and score below the tier-2
+    # threshold -- a worked payload.json scores 6 and a records.ttl 18 against
+    # a limit of 25 -- so volume alone would let a copy of either through.
+    # These are compound: a pair of markers that appear together only in one of
+    # his documents, never in code that merely refers to them.
+    if grep -qiE '"contract_version"' "$f" 2>/dev/null \
+       && grep -qiE '"data_origin"' "$f" 2>/dev/null; then
+        echo "pre-commit: refusing -- $f looks like one of his payload documents"
+        note "it carries both contract_version and data_origin"
+        fail=1
+        continue
+    fi
+    if grep -qE '@prefix' "$f" 2>/dev/null \
+       && grep -qE '\ba fm:' "$f" 2>/dev/null; then
+        echo "pre-commit: refusing -- $f looks like one of his record graphs"
+        note "it declares prefixes and asserts fm: types"
+        fail=1
+        continue
+    fi
     if [ -n "$bulk" ]; then
         echo "pre-commit: refusing -- $f carries the collaborator's material"
         note "found: $bulk"
@@ -71,7 +96,7 @@ for f in $staged; do
     # Tier 2 -- identifiers ours may legitimately mention, but not in bulk. A
     # file with hundreds of them is a copy of his schema or of the extracted
     # predicates; a file with a handful is ours, referring to his.
-    n=$(grep -ioE "reject_if\(EXISTS|EXISTS\(SELECT FROM|payload_binding|payload_schema|payload_blob|ProfileSpecification" "$f" 2>/dev/null | wc -l)
+    n=$(grep -ioE "reject_if\(EXISTS|EXISTS\(SELECT FROM|payload_binding|payload_schema|payload_blob|ProfileSpecification|urn:feder:worked:|fm:payload" "$f" 2>/dev/null | wc -l)
     if [ "$n" -gt 25 ]; then
         echo "pre-commit: refusing -- $f mentions the collaborator's schema $n times"
         note "That is a copy, not a reference. Our own code names a few of"
