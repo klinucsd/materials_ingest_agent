@@ -36,15 +36,29 @@ if [ -n "$suspect" ]; then
     fail=1
 fi
 
-# An archive or a very large file is almost certainly not source we wrote.
+# CONTENT, not just the name. A name check is trivially defeated by renaming
+# the file -- a guard test copied the extracted rule predicates to
+# `code/leaked.json` and it sailed past both the name check and the size limit.
+# So every staged text file is read and refused if it carries the
+# collaborator's material. The patterns are signatures of HIS content, not of
+# ours; this file names them in order to refuse them, and excludes itself.
 for f in $staged; do
     [ -f "$f" ] || continue
-    case "$f" in *.zip|*.tar|*.tar.gz|*.tgz|*.docx|*.pdf)
-        echo "pre-commit: refusing -- $f is a binary/archive, not source"; fail=1 ;;
+    [ "$f" = "code/pre-commit" ] && continue
+    case "$f" in *.zip|*.tar|*.tar.gz|*.tgz|*.docx|*.pdf|*.e|*.exodiff)
+        echo "pre-commit: refusing -- $f is a binary/archive, not source"; fail=1; continue ;;
     esac
     sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
     if [ "$sz" -gt 1048576 ]; then
         echo "pre-commit: refusing -- $f is $((sz/1024)) KB; too large to be source we wrote"
+        fail=1; continue
+    fi
+    hit=$(grep -ioE "reject_if\(EXISTS|CREATE TABLE materials|CREATE SCHEMA materials|urn:feder:|payload_binding|payload_schema|ProfileSpecification|fm:payloadProfile|0\.5\.0-payload|characterization_family" "$f" 2>/dev/null | sort -u | head -3 | tr '\n' ' ')
+    if [ -n "$hit" ]; then
+        echo "pre-commit: refusing -- $f carries the collaborator's material"
+        note "found: $hit"
+        note "Renaming a file does not make its contents ours. If this is"
+        note "genuinely our own text that happens to match, use --no-verify."
         fail=1
     fi
 done
