@@ -196,7 +196,22 @@ def default_schema() -> Path | None:
 
 
 def main(argv: list[str]) -> int:
-    args = [a for a in argv[1:] if not a.startswith("-")]
+    # Skip the VALUE after -o as well as the flag: filtering only on a
+    # leading dash leaves the output path looking like a positional, so
+    # `extract_rules.py -o out.json` took out.json for the schema, never
+    # consulted MIA_KIT_DIR, and then reported that MIA_KIT_DIR held no
+    # schema.sql -- a message that sent the reader after the wrong thing.
+    args, skip = [], False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+            continue
+        if a in ("-o", "--out"):
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        args.append(a)
     target = Path(args[0]) if args else default_schema()
     if target is None or not target.is_file():
         print(f"usage: {Path(argv[0]).name} <schema.sql> [-o out.json]")
@@ -233,8 +248,9 @@ def main(argv: list[str]) -> int:
     for k, v in sorted(families.items(), key=lambda kv: -kv[1])[:14]:
         print(f"    {k:<16} {v:>4}")
 
-    if "-o" in argv:
-        out = Path(argv[argv.index("-o") + 1])
+    out_flag = next((f for f in ("-o", "--out") if f in argv), None)
+    if out_flag:
+        out = Path(argv[argv.index(out_flag) + 1])
         out.write_text(json.dumps(rules, indent=1) + "\n")
         print(f"  wrote {out} ({out.stat().st_size:,} bytes)")
     return 0

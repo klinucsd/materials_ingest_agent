@@ -1,0 +1,46 @@
+# An isolated PostgreSQL for loading into the collaborator's schema.
+#
+# SHARED MACHINE. Every choice here is about not disturbing anyone else:
+#   - 8433 because 8332 is taken by another project on this host
+#   - bound to 127.0.0.1 only, so nothing is exposed off the box
+#   - hard mem_limit and cpus, so a runaway load cannot starve the neighbours
+#   - a NAMED volume, not a bind mount into the repo, so `git status` stays
+#     clean and the data comes off in one command
+#   - restart "no", so a reboot does not silently resurrect it
+#   - distinctive name and labels, so it is obvious whose it is
+#
+# Remove it, data and all:
+#   docker compose -f code/docker-compose.yml down -v --remove-orphans
+#
+# We never run `docker system prune` on this host.
+name: feder-mia
+services:
+  db:
+    image: postgres:18.6          # the version the kit records as tested
+    container_name: feder-mia-pg
+    ports: ["127.0.0.1:8433:5432"]
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in code/.env}
+      POSTGRES_DB: feder_materials
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    mem_limit: 2g
+    cpus: 2.0
+    shm_size: 256m
+    restart: "no"
+    # Mounted at /var/lib/postgresql, NOT .../data. From 18 the image stores
+    # data in a major-version subdirectory so pg_upgrade can work across a
+    # single mount point; mounting the old .../data path makes it refuse to
+    # start with "there appears to be PostgreSQL data in /var/lib/postgresql/
+    # data (unused mount/volume)". See docker-library/postgres#1259.
+    volumes: ["pgdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d feder_materials"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    labels:
+      project: feder-mia
+      disposable: "true"
+volumes:
+  pgdata:
+    name: feder-mia-pgdata

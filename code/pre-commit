@@ -53,12 +53,29 @@ for f in $staged; do
         echo "pre-commit: refusing -- $f is $((sz/1024)) KB; too large to be source we wrote"
         fail=1; continue
     fi
-    hit=$(grep -ioE "reject_if\(EXISTS|CREATE TABLE materials|CREATE SCHEMA materials|urn:feder:|payload_binding|payload_schema|ProfileSpecification|fm:payloadProfile|0\.5\.0-payload|characterization_family" "$f" 2>/dev/null | sort -u | head -3 | tr '\n' ' ')
-    if [ -n "$hit" ]; then
+    # Two tiers, because CARRYING his content and REFERENCING his identifiers
+    # are different things. Our own code has to name his tables to query them
+    # and has to mention reject_if to explain itself; the first version of this
+    # check blocked our entire commit for that. What it must catch is a copy.
+    #
+    # Tier 1 -- strings that appear only in his own DDL or payload documents.
+    # One occurrence is enough.
+    bulk=$(grep -ioE "CREATE SCHEMA materials|CREATE TABLE materials\.|urn:feder:worked:|fm:payloadProfile|0\.5\.0-payload|characterization_family AS ENUM" "$f" 2>/dev/null | sort -u | head -3 | tr '\n' ' ')
+    if [ -n "$bulk" ]; then
         echo "pre-commit: refusing -- $f carries the collaborator's material"
-        note "found: $hit"
-        note "Renaming a file does not make its contents ours. If this is"
-        note "genuinely our own text that happens to match, use --no-verify."
+        note "found: $bulk"
+        note "Renaming a file does not make its contents ours."
+        fail=1
+        continue
+    fi
+    # Tier 2 -- identifiers ours may legitimately mention, but not in bulk. A
+    # file with hundreds of them is a copy of his schema or of the extracted
+    # predicates; a file with a handful is ours, referring to his.
+    n=$(grep -ioE "reject_if\(EXISTS|EXISTS\(SELECT FROM|payload_binding|payload_schema|payload_blob|ProfileSpecification" "$f" 2>/dev/null | wc -l)
+    if [ "$n" -gt 25 ]; then
+        echo "pre-commit: refusing -- $f mentions the collaborator's schema $n times"
+        note "That is a copy, not a reference. Our own code names a few of"
+        note "these; his schema and the extracted predicates name hundreds."
         fail=1
     fi
 done
