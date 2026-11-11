@@ -211,6 +211,31 @@ _RULES: list[tuple] = [
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",
      "a required key is absent. Where the contract pins one permitted value "
      "for it, the proposal states that value"),
+    # WHEN MAY A DECLARATION BE EDITED TO MATCH THE CONTRACT?
+    #
+    # The contract names one permitted value, so every such violation looks
+    # like a lookup. The test is not what the field is called. It is:
+    #
+    #     if the edit were wrong, would anything catch it?
+    #
+    # Propose the edit when being wrong produces further rejections -- the
+    # remaining validation is then doing the checking. Ask when the edit makes
+    # the document internally consistent and wrong, because nothing downstream
+    # will ever disagree with it again.
+    #
+    #   unit              relabelling micrometre as nanometre leaves the
+    #                     NUMBERS unchanged and silently rescales the data by a
+    #                     thousand. Nothing catches it.                   ASK
+    #   data_origin       "synthetic" -> "experimental" asserts an experiment
+    #                     happened. The kit says so itself: "that label is an
+    #                     assertion, not proof".                           ASK
+    #   contract_version  claiming a different contract is tested by every
+    #                     other check against that contract; a document that
+    #                     does not satisfy it produces more rejections, not
+    #                     silence.                                     PROPOSE
+    #   family/technique  likewise -- the payload's field names are branch
+    #                     specific, so a false claim fails validation. PROPOSE
+    #
     # A UNIT is tested before the general const rule, and is never mechanical.
     # The contract names the one permitted unit, so "change micrometre to
     # nanometre" looks determinable -- and editing the declaration while the
@@ -224,6 +249,17 @@ _RULES: list[tuple] = [
      "the declaration to match: that leaves the numbers in the source's unit "
      "and silently rescales the data. The values must be converted upstream, "
      "which is the provider's decision, not a contract lookup"),
+    # data_origin: unverifiable by construction, so never proposable.
+    (None, r"^'(synthetic|experimental)' (was expected|is not one of)|"
+           r"is not one of \['synthetic', 'experimental'\]",
+     "R3_PAYLOAD_CONTRACT", "data_fix", "unknown",
+     "data_origin asserts whether a real experiment produced this. Nothing in "
+     "the schema can verify it -- the kit says the label is an assertion, not "
+     "proof -- so an edit here would never be contradicted by anything. Only "
+     "whoever produced the data can say"),
+    ("json_pointer:/data_origin", r".",
+     "R3_PAYLOAD_CONTRACT", "data_fix", "unknown",
+     "data_origin is an unverifiable assertion about provenance"),
     (None, r"was expected\b|is not one of|does not match|"
            r"is not valid under any of the given schemas",
      "R3_PAYLOAD_CONTRACT", "data_fix", "mechanical",
@@ -375,9 +411,16 @@ def classify(rejection: dict) -> Verdict:
     channel = rejection.get("channel") or ""
     label = rejection.get("rule_label")
     subject = label or unwrap(rejection.get("message") or "")
+    pointer = rejection.get("json_pointer") or ""
     for want_channel, pattern, cls, decision, confidence, why in _COMPILED:
-        if want_channel is not None and want_channel != channel:
-            continue
+        if want_channel is not None:
+            # `json_pointer:/x` matches on where in the document the problem
+            # is, which is sometimes the only thing that identifies it.
+            if want_channel.startswith("json_pointer:"):
+                if not pointer.startswith(want_channel.split(":", 1)[1]):
+                    continue
+            elif want_channel != channel:
+                continue
         if pattern.search(subject):
             return Verdict(cls, decision, confidence, why)
     return Verdict(UNCLASSIFIED["class"], UNCLASSIFIED["decision_type"],

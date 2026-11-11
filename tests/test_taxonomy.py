@@ -230,3 +230,33 @@ def test_a_non_unit_const_is_still_proposable():
     v = classify({"channel": "jsonschema",
                   "message": "'0.5.0-payload' was expected"})
     assert v["confidence"] == "mechanical"
+
+
+# ---------------------------------------- when may a declaration be edited? --
+# The test is not what the field is called. It is whether, if the edit were
+# wrong, anything would catch it. Propose when being wrong produces further
+# rejections; ask when the edit makes the document internally consistent and
+# wrong, because then nothing downstream will ever disagree with it again.
+
+def test_unverifiable_declarations_are_asked_about():
+    """Nothing downstream can contradict either of these."""
+    # relabelling the unit leaves the numbers untouched and rescales the data
+    unit = classify({"channel": "jsonschema", "json_pointer": "/units/depth_nm",
+                     "message": "'urn:feder:worked:unit:nanometre' was expected"})
+    assert not may_propose(unit)
+    # the kit: "that label is an assertion, not proof that an experiment occurred"
+    origin = classify({"channel": "jsonschema", "json_pointer": "/data_origin",
+                       "message": "'experimental' is not one of "
+                                  "['synthetic', 'experimental']"})
+    assert not may_propose(origin)
+
+
+def test_self_checking_declarations_are_proposable():
+    """A false claim here produces more rejections, not silence."""
+    for pointer, message in (
+            ("/contract_version", "'0.5.0-payload' was expected"),
+            ("/family", "'composition_depth' was expected"),
+            ("/technique", "'Dynamic SIMS depth profile' was expected")):
+        v = classify({"channel": "jsonschema", "json_pointer": pointer,
+                      "message": message})
+        assert may_propose(v), f"{pointer} should be proposable: {v}"
