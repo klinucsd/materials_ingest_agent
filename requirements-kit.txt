@@ -1,0 +1,13 @@
+# The validator environment. These three versions are PINNED DELIBERATELY and
+# must not be upgraded casually.
+#
+# The target schema records, against every approval it holds, a fingerprint of
+# the validating environment -- and that fingerprint includes the installed
+# jsonschema version. Change it and every approval already in the database
+# stops matching. Because the approval table is append-only and keyed on the
+# profile identity, you cannot simply re-approve: recovery means minting new
+# identities throughout. So this environment is kept separate from the agent's
+# own dependencies, which are free to move.
+jsonschema==4.26.0
+psycopg[binary]==3.3.6
+rdflib==7.6.0

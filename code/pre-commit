@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Refuse a commit that would publish material that is not ours.
+#
+# Install:  ln -sf ../../code/pre-commit .git/hooks/pre-commit
+# Bypass:   git commit --no-verify
+#
+# THIS REPOSITORY IS PUBLIC. It reads a collaborator's unreleased schema and
+# ingestion kit; that material, and anything quoting it verbatim, must never be
+# committed here. .gitignore excludes data/ and docs/, but `git add -f` walks
+# past an ignore and a tracked-then-moved file never hits one -- so the staged
+# list is checked as well.
+set -u
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+fail=0
+note() { printf '  %s\n' "$1"; }
+
+bad=$(printf '%s\n' "$staged" | grep -E '^(data|docs)/' || true)
+if [ -n "$bad" ]; then
+    echo "pre-commit: refusing -- material that is not ours is staged"
+    printf '%s\n' "$bad" | head -8 | while read -r f; do note "$f"; done
+    note ""
+    note "data/ holds the collaborator's kit, the archives, the extracted SQL"
+    note "predicates and every working bundle. docs/ is internal planning."
+    note "Neither goes in a public repo."
+    fail=1
+fi
+
+# A file that looks like the collaborator's kit under any other name.
+suspect=$(printf '%s\n' "$staged" | grep -iE '(schema\.sql|catalog\.json|MANIFEST\.json|rule_predicates|crosswalk|payload-schemas/|records\.ttl|FEDER-Materials)' || true)
+if [ -n "$suspect" ]; then
+    echo "pre-commit: refusing -- these look like the collaborator's files"
+    printf '%s\n' "$suspect" | head -8 | while read -r f; do note "$f"; done
+    note "If one of these is genuinely ours, rename it or use --no-verify."
+    fail=1
+fi
+
+# An archive or a very large file is almost certainly not source we wrote.
+for f in $staged; do
+    [ -f "$f" ] || continue
+    case "$f" in *.zip|*.tar|*.tar.gz|*.tgz|*.docx|*.pdf)
+        echo "pre-commit: refusing -- $f is a binary/archive, not source"; fail=1 ;;
+    esac
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 1048576 ]; then
+        echo "pre-commit: refusing -- $f is $((sz/1024)) KB; too large to be source we wrote"
+        fail=1
+    fi
+done
+
+LIMIT=${PRE_COMMIT_FILE_LIMIT:-150}
+count=$(printf '%s\n' "$staged" | wc -l)
+if [ "$count" -gt "$LIMIT" ]; then
+    echo "pre-commit: refusing -- $count files staged (limit $LIMIT)"
+    note "'git add -A' from a subdirectory stages the WHOLE repo. Add paths explicitly."
+    fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then echo; echo "  (deliberate? git commit --no-verify)"; exit 1; fi
+exit 0

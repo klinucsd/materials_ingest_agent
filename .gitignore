@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# THIRD-PARTY MATERIAL -- NEVER COMMITTED. THIS REPOSITORY IS PUBLIC.
+#
+# This agent reads a materials-science schema and ingestion kit authored by a
+# collaborator. That material was shared with us directly and is unreleased
+# work in progress: its own manifest marks it `"tentative": true`,
+# `"population_authorized": false`, and "All mapping candidates are disabled
+# and require review."
+#
+# None of it belongs here, and neither does anything derived from it verbatim.
+# `data/` therefore holds the kit, the archives it came from, the extracted
+# rule predicates (which are the collaborator's SQL, quoted), every working
+# bundle and every decision record -- and the whole directory is excluded.
+#
+# Point the tool at a local copy with MIA_KIT_DIR instead. See README.md.
+data/
+
+# Internal planning and status material stays out too -- it describes the
+# collaborator's design in detail and is ours to keep, not to publish.
+docs/
+# ---------------------------------------------------------------------------
+
+# Secrets and environments
+.env
+.env.*
+!.env.example
+.pgpass
+.venv/
+.venv-kit/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Editors and OS
+.DS_Store
+*.swp
