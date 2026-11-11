@@ -1,0 +1,11 @@
+# The agent half. Deliberately NOT installed beside the validator.
+#
+# The target schema fingerprints the installed jsonschema version against every
+# approval it holds, and approvals are append-only -- so a dependency the agent
+# drags in that moves jsonschema would invalidate every approval in the
+# database, unrecoverably. These two environments never share an interpreter.
+#
+# Nothing here is an agent framework: the semantic step is a single structured
+# call, and the loop around it -- map, probe, revise, ask -- is ours, in Python,
+# where it can be read and tested.
+httpx>=0.27
