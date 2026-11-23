@@ -154,6 +154,19 @@ _RULES: list[tuple] = [
      "R6_SEALED", "escalate", "mechanical",
      "this bundle, artifact or profile is already recorded. Nothing to do "
      "unless a new identity is genuinely wanted"),
+    # The same condition, arriving on the channel the SEAL uses. The matcher
+    # above only ever saw `sql_constraint`, and a re-ingest raises inside
+    # `admit`, which reports on `seal_failed` -- so re-ingesting a committed
+    # bundle was classified by the catch-all at the end of R3 as
+    # R3_PAYLOAD_CONTRACT / data_fix. That is the one answer this class must
+    # never give: it invites an operator to edit a bundle whose records are
+    # append-only. Measured 2026-11-23 against a loaded database.
+    ("seal_failed", r"duplicate key|already exists|23505|UniqueViolation",
+     "R6_SEALED", "escalate", "mechanical",
+     "sealing failed because this dataset's payload is already recorded. The "
+     "records are append-only, so this is not a data fix -- either the bundle "
+     "has been ingested already, or a correction needs a NEW artifact and "
+     "dataset identity"),
 
     # ---- R7: deployment, privilege and bundle hygiene. Not data.
     (None, r"^(Writer and validator must be separate roles|"

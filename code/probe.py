@@ -379,29 +379,56 @@ def stage_sql_rules(compiled, conn, contents):
             datasets = sorted({i for i, t in rows["entity_type"]
                                if t in ("SignalDataset", "ProcessedDataset",
                                         "FeatureCollection")})
+            def seal_one(dataset):
+                """Seal one dataset. Returns a rejection, or None on success."""
+                artifact = conn.execute(
+                    "SELECT materials.object_of(%s,'payloadArtifact')",
+                    (dataset,)).fetchone()[0]
+                body = contents.get(artifact)
+                if body is None:
+                    return reject(
+                        "sql_rules", "python_valueerror",
+                        "Missing explicit artifact in bundle manifest",
+                        dataset=dataset, artifact=artifact)
+                admit(conn, dataset, body)
+                return None
+
             for dataset in datasets:
+                # A SAVEPOINT per dataset. Postgres aborts the whole
+                # transaction on any failed statement, so without this a
+                # single failed seal left every predicate below raising
+                # InFailedSqlTransaction -- and each one was then reported as
+                # a rule "not evaluable outside its trigger". Measured
+                # 2026-11-23 on a bundle already present in the database: 2
+                # real rejections and 552 false ones. The rules were
+                # evaluable; the transaction was dead.
                 try:
-                    artifact = conn.execute(
-                        "SELECT materials.object_of(%s,'payloadArtifact')",
-                        (dataset,)).fetchone()[0]
-                    body = contents.get(artifact)
-                    if body is None:
-                        out.append(reject(
-                            "sql_rules", "python_valueerror",
-                            "Missing explicit artifact in bundle manifest",
-                            dataset=dataset, artifact=artifact))
-                        continue
-                    admit(conn, dataset, body)
+                    with conn.transaction():
+                        failure = seal_one(dataset)
+                    if failure is not None:
+                        out.append(failure)
                 except Exception as exc:                     # noqa: BLE001
                     out.append(reject("sql_rules", "seal_failed",
                                       f"{type(exc).__name__}: {exc}",
                                       dataset=dataset))
 
+            aborted = None
             for rule in predicates:
                 try:
-                    hit = conn.execute(
-                        f"SELECT {rule['predicate']}").fetchone()[0]
+                    # A savepoint here too, so one unevaluable predicate
+                    # cannot take the remaining 557 with it.
+                    with conn.transaction():
+                        hit = conn.execute(
+                            f"SELECT {rule['predicate']}").fetchone()[0]
                 except Exception as exc:                     # noqa: BLE001
+                    if type(exc).__name__ == "InFailedSqlTransaction":
+                        # OURS, not a gap in the schema's coverage. Every
+                        # remaining predicate would report the same thing
+                        # about the same dead transaction, so say it once and
+                        # stop. `probe_unsupported` would be a false claim
+                        # about what this probe can reach.
+                        aborted = exc
+                        break
                     # Recorded, not hidden: a predicate we cannot evaluate is
                     # a gap in this probe, and the agent must know its list is
                     # incomplete rather than assume it is clean.
@@ -416,6 +443,13 @@ def stage_sql_rules(compiled, conn, contents):
                                       rule_label=rule["label"],
                                       sqlstate="23514",
                                       schema_line=rule.get("line")))
+            if aborted is not None:
+                out.append(reject(
+                    "sql_rules", "probe_error",
+                    f"the staging transaction was aborted before the rules "
+                    f"could be evaluated, so none of the {len(predicates)} "
+                    f"rule(s) was checked. Resolve the rejections above and "
+                    f"re-probe"))
     except Exception as exc:                                 # noqa: BLE001
         out.append(reject("sql_rules", "probe_error",
                           f"staging failed: {type(exc).__name__}: {exc}"))
