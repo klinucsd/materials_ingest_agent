@@ -14,6 +14,15 @@ Two outcomes count as failures, not just the obvious one:
                      the tool. Where the answer is not determined by the
                      contract, the tool must ASK.
 
+The mutations come in two groups, and the split is the point. MECHANICAL
+damage is damage the contract itself resolves, and the tool should offer the
+fix. ASKING damage is damage the contract detects and cannot resolve, and
+there the tool must write a question with no proposal attached. A suite made
+only of the first group cannot tell the two apart -- which is what happened
+here: the anti-coercion invariant sat green for a day while executing its own
+assertion zero times, because no mutation produced a value the contract could
+not determine.
+
 These write no decision records into the repository. `decisions` keeps its
 store in module-level constants, so every test that records anything
 monkeypatches them to a temporary directory; without that, running the suite
@@ -31,6 +40,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
 import decisions                                             # noqa: E402
+import proposals                                             # noqa: E402
 from taxonomy import classify, may_propose                   # noqa: E402
 
 KIT = os.environ.get("MIA_KIT_DIR")
@@ -84,6 +94,63 @@ def remove_the_payload_profile_triples(bundle: Path):
     p.write_text("\n".join(kept) + "\n")
 
 
+# Every mutation above is MECHANICAL: the contract determines the correction,
+# so the right behaviour is to propose it. The three below are the ones this
+# project exists for -- the contract can detect them and cannot resolve them.
+
+def negative_peak_width(bundle: Path):
+    """A diffraction peak with a negative width.
+
+    `fwhm_deg` carries `exclusiveMinimum: 0`, so the contract says the value is
+    wrong without saying what it should be. A negative width can be a sign
+    convention, a failed fit, or a saturated channel read as a peak, and those
+    have different corrections.
+    """
+    p = bundle / "payload.json"
+    doc = json.loads(p.read_text())
+    doc["features"][0]["fwhm_deg"] = -0.1
+    p.write_text(json.dumps(doc, indent=2))
+
+
+def unit_swapped_for_another(bundle: Path):
+    """A declared unit the contract does not permit.
+
+    The hardest case in the taxonomy, because the contract names exactly ONE
+    permitted unit -- so the edit looks as determinable as any other const.
+    Editing the DECLARATION while the numbers stay as measured is what makes
+    it dangerous: the document then passes every later check while carrying
+    values wrong by whatever the conversion factor was.
+    """
+    p = bundle / "payload.json"
+    doc = json.loads(p.read_text())
+    doc["units"]["fwhm_deg"] = "urn:feder:worked:unit:one"
+    p.write_text(json.dumps(doc, indent=2))
+
+
+def data_origin_not_permitted(bundle: Path):
+    """A provenance claim outside the permitted enum.
+
+    Nothing in the schema can check whether a real experiment produced a
+    document -- the kit says the label is an assertion, not proof -- so an
+    edit here would never be contradicted by anything downstream. That is
+    exactly the shape of a change nobody would catch.
+    """
+    p = bundle / "payload.json"
+    doc = json.loads(p.read_text())
+    doc["data_origin"] = "simulated"
+    p.write_text(json.dumps(doc, indent=2))
+
+
+# The groups the invariants below run over. `remove_the_payload_profile_triples`
+# is deliberately in neither: it produces nothing offline, which is its own
+# test at the end of this file.
+MECHANICAL = (remove_a_pinned_unit, manifest_escapes_the_bundle,
+              declare_the_wrong_family)
+ASKING = (negative_peak_width, unit_swapped_for_another,
+          data_origin_not_permitted)
+ALL_MUTATIONS = MECHANICAL + ASKING
+
+
 # ------------------------------------------------------------------ helpers --
 
 def mutate(tmp_path: Path, mutation) -> Path:
@@ -133,6 +200,9 @@ def test_the_unmutated_bundle_is_clean():
     (remove_a_pinned_unit,          "R3_PAYLOAD_CONTRACT"),
     (manifest_escapes_the_bundle,   "R7_ENVIRONMENT"),
     (declare_the_wrong_family,      "R3_PAYLOAD_CONTRACT"),
+    (negative_peak_width,           "R3_PAYLOAD_CONTRACT"),
+    (unit_swapped_for_another,      "R3_PAYLOAD_CONTRACT"),
+    (data_origin_not_permitted,     "R3_PAYLOAD_CONTRACT"),
 ], ids=lambda v: getattr(v, "__name__", v))
 def test_a_mutation_is_reported_and_classified(tmp_path, mutation,
                                                expected_class):
@@ -198,17 +268,93 @@ def test_a_wrong_identity_is_reported_once_not_once_per_row(tmp_path):
 
 
 @needs_probe
+@pytest.mark.parametrize("mutation", ASKING,
+                         ids=lambda v: getattr(v, "__name__", v))
+def test_a_value_the_contract_cannot_determine_is_asked_about(tmp_path,
+                                                              mutation):
+    """The anti-coercion mechanism, one case per reason it applies.
+
+    Each of these is a rejection the contract detects and cannot resolve. The
+    tool must write a QUESTION, and `proposal is None` is the half that
+    matters: a proposal is the only thing a reviewer can accept with one
+    keystroke, so the absence of one is what forces the conversation.
+    """
+    bundle = mutate(tmp_path, mutation)
+    rejections = probe(bundle)
+    assert rejections, "the damage was not reported at all"
+    for rejection in rejections:
+        verdict = classify(rejection)
+        assert verdict["confidence"] == "unknown", (
+            f"{rejection.get('message','')[:70]!r} was classified "
+            f"{verdict['confidence']}; a value only the experimenter can "
+            f"know must be unknown")
+        record = proposals.attach(
+            decisions.make_record(rejection, verdict, bundle, digests={}))
+        assert record["proposal"] is None, (
+            f"the tool offered to edit the data it cannot know: "
+            f"{record['proposal']}")
+        assert record["question"], (
+            "neither a question nor a proposal was written, so the rejection "
+            "reaches nobody")
+        assert record["question"]["why_not_proposing"], (
+            "a question must say why it is not a proposal, or the reviewer "
+            "cannot tell a limit of the tool from a limit of the contract")
+
+
+@needs_probe
+def test_a_pinned_unit_is_derivable_and_refused_anyway(tmp_path):
+    """The one case where the GUARD, not the derivation, is what stops us.
+
+    A wrong unit arrives as `validator: "const"` with a json_pointer and the
+    permitted value attached -- byte for byte the shape `_derive_edit` turns
+    into a proposal for a wrong `technique`. Nothing in the error itself says
+    "do not touch this"; only `may_propose` does. So if that check were ever
+    dropped from `proposals.attach`, every other test in this file would still
+    pass while the tool quietly began rewriting unit declarations.
+    """
+    bundle = mutate(tmp_path, unit_swapped_for_another)
+    pinned = [r for r in probe(bundle)
+              if r.get("validator") == "const"
+              and (r.get("json_pointer") or "").startswith("/units/")]
+    assert pinned, "the unit rejection no longer arrives as a const violation"
+    for rejection in pinned:
+        verdict = classify(rejection)
+        assert proposals._derive_edit(rejection) is not None, (
+            "this test has stopped testing anything: the edit is no longer "
+            "derivable, so the taxonomy guard is not what refuses it")
+        assert not may_propose(verdict)
+        record = proposals.attach(
+            decisions.make_record(rejection, verdict, bundle, digests={}))
+        assert record["proposal"] is None, (
+            "a unit declaration was proposed for editing. Changing the "
+            "declaration without converting the numbers rescales the data "
+            "and passes every later check")
+
+
+@needs_probe
 def test_a_value_only_the_experimenter_knows_is_never_proposed(tmp_path):
-    """The anti-coercion rule, stated as an invariant over every mutation."""
-    for mutation in (remove_a_pinned_unit, manifest_escapes_the_bundle,
-                     declare_the_wrong_family):
+    """The anti-coercion rule as an invariant over every mutation.
+
+    The `witnessed` counter is not decoration. Written over the three
+    mechanical mutations alone, this test passed while running its own
+    assertion ZERO times: none of them produces an `unknown`, so the loop body
+    never executed and the invariant was never checked. Measured 2026-11-23.
+    An invariant test has to assert that it saw a case.
+    """
+    witnessed = 0
+    for mutation in ALL_MUTATIONS:
         bundle = mutate(tmp_path / mutation.__name__, mutation)
         for rejection in probe(bundle):
             verdict = classify(rejection)
             if verdict["confidence"] == "unknown":
+                witnessed += 1
                 assert not may_propose(verdict), (
                     f"{mutation.__name__}: the tool offered to supply a value "
                     f"it cannot know -- {rejection.get('message','')[:80]}")
+    assert witnessed >= len(ASKING), (
+        f"only {witnessed} unknown-confidence rejections across "
+        f"{len(ALL_MUTATIONS)} mutations; this test is not exercising the rule "
+        f"it claims to")
 
 
 @needs_probe
@@ -217,8 +363,7 @@ def test_no_mutation_can_authorise_itself(tmp_path, monkeypatch):
     author: the tool holds nothing that can mark its own work approved."""
     monkeypatch.setattr(decisions, "DECISIONS", tmp_path / "decisions")
     monkeypatch.setattr(decisions, "LEDGER", tmp_path / "ledger.json")
-    for mutation in (remove_a_pinned_unit, manifest_escapes_the_bundle,
-                     declare_the_wrong_family):
+    for mutation in ALL_MUTATIONS:
         bundle = mutate(tmp_path / mutation.__name__, mutation)
         for record in records_for(probe(bundle), bundle):
             assert record["executable"] is False
