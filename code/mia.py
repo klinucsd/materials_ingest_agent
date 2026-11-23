@@ -10,7 +10,14 @@ auditable way to find out why a bundle will not load.
     mia.py review  [--bundle X] [--all]
     mia.py answer  <id> --decision approved|answered|amended|rejected|deferred
                         [--answer TEXT] [--amend FILE]
+    mia.py run     <bundle> [--db]     the loop: probe, record, apply what was
+                                       approved, probe again
     mia.py status
+
+`run` exits 0 when the bundle has nothing left to resolve and 2 when it is
+waiting on a person. It never reaches 0 by deciding anything itself: the only
+changes it makes are ones a person approved by name, and after each one it
+re-probes and checks the change had the effect it said it would.
 
 WHAT THIS CANNOT DO, BY CONSTRUCTION. It cannot approve a contract: there is
 no code path here that writes `materials.payload_schema`, and the owner
@@ -30,6 +37,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import decisions                                            # noqa: E402
+import proposals                                            # noqa: E402
 from taxonomy import classify, may_propose                  # noqa: E402
 
 ROOT = HERE.parent
@@ -90,7 +98,7 @@ def cmd_probe(a):
             continue
         if decisions.load(record["id"]) is not None:
             continue
-        decisions.save(record)
+        decisions.save(proposals.attach(record))
         fresh += 1
 
     print(f"  {bundle.name}: {len(rejections)} rejection(s)")
@@ -100,6 +108,127 @@ def cmd_probe(a):
     if fresh:
         print(f"\n  Read them:  mia.py review --bundle {bundle.name}")
     return 1 if fresh else 0
+
+
+def _logical_ids(rejections, bundle, digests):
+    """The identity each rejection would record, without writing anything."""
+    out = {}
+    for rejection in rejections:
+        record = decisions.make_record(rejection, classify(rejection), bundle,
+                                       digests=digests)
+        out[record["logical_id"]] = record
+    return out
+
+
+def cmd_run(a):
+    """The loop: probe, record, apply what a person approved, probe again.
+
+    It stops for a person at every point where a person is needed, and the
+    exit code says which happened: 0 the bundle has nothing left to resolve,
+    2 it is waiting on someone. It never reaches 0 by deciding something
+    itself -- the only changes it makes are ones already approved by name.
+
+    Each pass re-probes from scratch rather than assuming the last pass's
+    list minus what was fixed. An applied edit can expose a rejection that was
+    previously unreachable, and a list carried forward would never show it.
+    """
+    bundle = Path(a.bundle).resolve()
+    if not bundle.is_dir():
+        print(f"  no such bundle: {bundle}")
+        return 2
+    digests = decisions.bundle_digests(bundle)
+    predicted: dict[str, str] = {}      # logical_id -> the record that predicted it
+
+    for attempt in range(1, a.max_passes + 1):
+        rejections = _probe(bundle, a.db)
+        present = _logical_ids(rejections, bundle, digests)
+        print(f"  pass {attempt}: {len(rejections)} rejection(s)")
+
+        # Did the last pass's approved edits do what they said they would?
+        # A change that does not clear what it predicted has done something
+        # other than what was approved, and proceeding would build on it.
+        broken = [(logical, rid) for logical, rid in predicted.items()
+                  if logical in present]
+        if broken:
+            for logical, rid in broken:
+                record = decisions.load(rid)
+                if record is not None:
+                    record["verification"] = {
+                        "at_utc": decisions._now(),
+                        "result": "predicted_effect_not_observed",
+                        "still_present": logical,
+                    }
+                    decisions.save(record)
+                print(f"    !! {rid[:22]} said it would clear {logical[:24]} "
+                      f"and did not")
+            print("\n  Stopping. An approved change did not have the effect "
+                  "it stated,\n  so the record is reopened rather than passed "
+                  "over.")
+            return 2
+        predicted = {}
+
+        if not rejections:
+            print(f"\n  {bundle.name}: nothing left to resolve"
+                  + ("" if a.db else
+                     "   (offline; the SQL rules were not evaluated)"))
+            if not a.db:
+                print("  Re-run with --db before concluding it would load.")
+            return 0
+
+        # Record anything new, so every rejection present is answerable.
+        known = {r["logical_id"]: r for r in decisions.all_records()}
+        fresh = 0
+        for logical, record in present.items():
+            if logical in known:
+                continue
+            decisions.save(proposals.attach(record))
+            fresh += 1
+        if fresh:
+            print(f"    {fresh} new decision record(s)")
+
+        # Apply only what a person approved, and only where the answer still
+        # matches the question it was given for.
+        applied = 0
+        for logical in present:
+            record = known.get(logical)
+            if record is None:
+                continue
+            human = record.get("human") or {}
+            if human.get("decision") not in ("approved", "amended"):
+                continue
+            if not decisions.honours_signature(record):
+                print(f"    .. {record['id'][:22]} was answered, but the "
+                      f"question has changed since. Not applying it.")
+                continue
+            proposal = human.get("amended_proposal") or record.get("proposal")
+            if not proposal:
+                continue
+            try:
+                changed = proposals.apply(bundle, proposal)
+            except ValueError as exc:
+                print(f"    !! {record['id'][:22]} could not be applied: {exc}")
+                return 2
+            if changed:
+                applied += 1
+                predicted.update(
+                    {l: record["id"] for l in
+                     (proposal.get("predicted_effect") or {}).get("clears", [])})
+                print(f"    ++ applied {record['id'][:22]}  "
+                      f"{proposal['json_pointer']} -> {proposal['to']!r}")
+
+        if not applied:
+            waiting = [r for logical, r in
+                       ((l, known.get(l)) for l in present)
+                       if r is not None and not r.get("human")]
+            print(f"\n  {bundle.name}: waiting on {len(waiting) or len(present)}"
+                  f" decision(s)")
+            print(f"  Read them:  mia.py review --bundle {bundle.name}")
+            return 2
+
+    print(f"\n  Stopped after {a.max_passes} passes with rejections "
+          f"remaining.\n  That is a limit, not a conclusion -- nothing here "
+          f"says the bundle cannot load.")
+    return 2
 
 
 def _group(records):
@@ -228,10 +357,18 @@ def main(argv):
     w.add_argument("--amend", help="a JSON file holding a corrected proposal")
     w.add_argument("--by")
 
+    n = sub.add_parser("run", help="probe, record, apply what was approved, "
+                                   "and probe again")
+    n.add_argument("bundle")
+    n.add_argument("--db", action="store_true",
+                   help="also evaluate the SQL rules against staged rows")
+    n.add_argument("--max-passes", type=int, default=5,
+                   help="stop after this many passes (default 5)")
+
     sub.add_parser("status", help="what is waiting, and are the flags intact")
 
     a = ap.parse_args(argv[1:])
-    return {"probe": cmd_probe, "review": cmd_review,
+    return {"probe": cmd_probe, "review": cmd_review, "run": cmd_run,
             "answer": cmd_answer, "status": cmd_status}[a.command](a)
 
 
