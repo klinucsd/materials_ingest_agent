@@ -167,6 +167,37 @@ def test_the_wrong_family_does_not_take_the_probe_down(tmp_path):
 
 
 @needs_probe
+def test_a_wrong_identity_is_reported_once_not_once_per_row(tmp_path):
+    """A mislabelled payload is ONE finding, not one per row.
+
+    `family`, `technique` and `contract_version` are const in every payload
+    contract: they say which contract the document claims to be an instance
+    of. When they disagree, checking the body against that contract describes
+    nothing, because the body was never meant to satisfy it.
+
+    Measured on 2026-11-23, before this was handled: a single wrong `family`
+    produced **21,026** rejections, and `mia.py probe` would have written
+    21,026 decision records for one mistake. The fact explaining all of them
+    was somewhere in the middle of the list.
+
+    Nothing is lost by stopping at the mismatch. Once the identity is settled
+    the next probe checks the body against the contract that applies, and
+    those findings survive instead of being deleted by the correction.
+    """
+    rejections = probe(mutate(tmp_path, declare_the_wrong_family))
+    assert 1 <= len(rejections) <= len(("contract_version", "family",
+                                        "technique")), (
+        f"a single mislabelled payload produced {len(rejections)} rejections; "
+        f"it should report only the identity fields that disagree")
+    assert all(r["channel"] == "jsonschema" for r in rejections)
+    assert all(r.get("json_pointer", "").lstrip("/") in
+               ("contract_version", "family", "technique")
+               for r in rejections), (
+        "the body was validated against a contract the document is not an "
+        "instance of")
+
+
+@needs_probe
 def test_a_value_only_the_experimenter_knows_is_never_proposed(tmp_path):
     """The anti-coercion rule, stated as an invariant over every mutation."""
     for mutation in (remove_a_pinned_unit, manifest_escapes_the_bundle,

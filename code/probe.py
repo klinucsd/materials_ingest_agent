@@ -196,6 +196,12 @@ def stage_graph_semantics(graph):
 
 
 # ----------------------------------------------------------------- stage 4 --
+# The fields a payload uses to say WHICH contract it is an instance of. All
+# three are `const` in every payload schema, so a mismatch is not one error
+# among many -- it means the contract being applied is the wrong one.
+IDENTITY_FIELDS = ("contract_version", "family", "technique")
+
+
 def stage_payload(graph, contents, conn=None):
     """Every payload error, not the first.
 
@@ -252,8 +258,29 @@ def stage_payload(graph, contents, conn=None):
                               profile=str(profile) if profile else None))
             continue
 
-        for err in sorted(Draft202012Validator(schema).iter_errors(doc),
-                          key=lambda e: list(e.absolute_path)):
+        errors = sorted(Draft202012Validator(schema).iter_errors(doc),
+                        key=lambda e: list(e.absolute_path))
+
+        # A document whose const-pinned identity fields disagree with the
+        # contract is not an instance of that contract, so checking its body
+        # against it describes nothing. One wrong `family` produced 21,026
+        # rejections -- every row of a payload failing a branch it was never
+        # meant to satisfy -- and the one fact that explains all of them was
+        # somewhere in the middle. Report the mismatch alone.
+        #
+        # Nothing is lost by stopping. Once the identity is settled, the next
+        # probe checks the body against the contract that actually applies,
+        # and those rejections are about the data rather than about the
+        # mislabelling. Reporting them now would mean asking a person to read
+        # thousands of findings that the next run deletes.
+        identity = [e for e in errors
+                    if e.validator == "const"
+                    and len(e.absolute_path) == 1
+                    and e.absolute_path[0] in IDENTITY_FIELDS]
+        if identity:
+            errors = identity
+
+        for err in errors:
             out.append(reject("payload", "jsonschema", err.message,
                               dataset=dataset_iri,
                               json_pointer="/" + "/".join(
@@ -261,6 +288,11 @@ def stage_payload(graph, contents, conn=None):
                               validator=err.validator,
                               validator_value=_small(err.validator_value),
                               schema_source=source))
+        if identity:
+            # The semantic rules are indexed by family too, so they would be
+            # reading the document as a branch it has already been shown not
+            # to be.
+            continue
         # The kit's semantic rules are indexed by `family` and assume the
         # document is the branch that family names. A payload declaring the
         # wrong family sends them looking for a primary key the document does
