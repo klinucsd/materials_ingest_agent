@@ -261,7 +261,22 @@ def stage_payload(graph, contents, conn=None):
                               validator=err.validator,
                               validator_value=_small(err.validator_value),
                               schema_source=source))
-        for msg in semantic_errors(doc):
+        # The kit's semantic rules are indexed by `family` and assume the
+        # document is the branch that family names. A payload declaring the
+        # wrong family sends them looking for a primary key the document does
+        # not have, and they RAISE rather than return a message. A real bundle
+        # can arrive that way, and letting it propagate loses every rejection
+        # found so far -- the caller sees "the probe did not run" and learns
+        # nothing about the bundle. Record it instead, on the channel the
+        # taxonomy escalates, which also states that this list is incomplete.
+        try:
+            messages = list(semantic_errors(doc))
+        except Exception as exc:
+            out.append(reject("payload", "probe_error",
+                              f"{type(exc).__name__}: {exc}",
+                              dataset=dataset_iri, schema_source=source))
+            continue
+        for msg in messages:
             out.append(reject("payload", "payload_semantics", msg,
                               dataset=dataset_iri, schema_source=source))
     return out
