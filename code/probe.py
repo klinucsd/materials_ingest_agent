@@ -97,6 +97,49 @@ def dedupe(rejections):
     return out
 
 
+def drop_restatements(rejections):
+    """Drop a rejection that only restates one already reported.
+
+    `dedupe` above collapses the SAME defect found under several datasets. This
+    handles the other shape: one defect described twice by two different
+    stages, which `dedupe` cannot see because the channel and wording differ.
+    T3 measured both on 2026-11-24, on every payload mutation:
+
+      `admit` re-runs the payload validation, so a schema error is reported
+      once by our own `iter_errors` pass and again as the exception that
+      stopped the seal. Different channel, longer text, different
+      `logical_id` -- so a person is asked about one problem twice.
+
+      A rule checked offline in stage 5 is checked again by the SQL probe in
+      stage 7, so a CHAR_JSON_* rule arrives once per path under one label.
+
+    Only a restatement goes. A seal failure that says something NEW is the
+    only report of that defect and is kept -- both the duplicate key from a
+    re-ingest and the missing approved schema that follows from a dropped
+    payloadProfile survive this.
+    """
+    # Shorter than this and a substring match is a coincidence, not a
+    # restatement.
+    MIN = 15
+    prior = [r["message"] for r in rejections
+             if r.get("channel") != "seal_failed"
+             and len(r.get("message") or "") >= MIN]
+
+    labels, out = set(), []
+    for r in rejections:
+        message = r.get("message") or ""
+        if r.get("channel") == "seal_failed" \
+                and any(p in message for p in prior):
+            continue
+        label = r.get("rule_label")
+        if label:
+            if label in labels:
+                continue
+            labels.add(label)
+        out.append(r)
+    return out
+
+
 # ----------------------------------------------------------------- stage 1 --
 def stage_bundle_shape(bundle: Path):
     """Manifest and payload files. Every problem, not the first.
@@ -188,7 +231,11 @@ def stage_graph_semantics(graph):
         from characterization.documents import graph_check
         from rdflib import Namespace
         m = Namespace("https://w3id.org/feder/materials/proposal/0.1/")
-        return [reject("graph_semantics", "sql_rule_offline", label)
+        # Carry `rule_label` as well as the message. The classifier prefers
+        # the label when it is present, and it is what lets a rule found here
+        # be recognised as the SAME rule when stage 7 finds it again.
+        return [reject("graph_semantics", "sql_rule_offline", label,
+                       rule_label=label)
                 for label in sorted(graph_check(graph, m))]
     except Exception as exc:                                 # noqa: BLE001
         return [reject("graph_semantics", "probe_error",
@@ -482,7 +529,7 @@ def dryrun(bundle: Path, use_db: bool):
     finally:
         if conn is not None:
             conn.close()
-    return dedupe(out)
+    return drop_restatements(dedupe(out))
 
 
 def cmd_env(assert_lock: bool):
