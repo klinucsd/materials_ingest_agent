@@ -94,6 +94,22 @@ def remove_the_payload_profile_triples(bundle: Path):
     p.write_text("\n".join(kept) + "\n")
 
 
+def declare_the_wrong_family_in_the_embedded_json(bundle: Path):
+    """The embedded acquisition JSON claims a family the graph does not.
+
+    `configurationJSON` is a JSON document carried inside a TTL literal, so
+    two descriptions of the same thing sit side by side and can disagree. The
+    kit checks one against the other, which is why this is its own class
+    rather than a payload problem: nothing in the payload is wrong.
+    """
+    p = bundle / "records.ttl"
+    text = p.read_text()
+    old = r'\"kind\": \"acquisition\", \"family\": \"xray_diffraction\"'
+    new = r'\"kind\": \"acquisition\", \"family\": \"thermal\"'
+    assert text.count(old) == 1, "the embedded acquisition JSON moved"
+    p.write_text(text.replace(old, new))
+
+
 # Every mutation above is MECHANICAL: the contract determines the correction,
 # so the right behaviour is to propose it. The three below are the ones this
 # project exists for -- the contract can detect them and cannot resolve them.
@@ -145,7 +161,8 @@ def data_origin_not_permitted(bundle: Path):
 # is deliberately in neither: it produces nothing offline, which is its own
 # test at the end of this file.
 MECHANICAL = (remove_a_pinned_unit, manifest_escapes_the_bundle,
-              declare_the_wrong_family)
+              declare_the_wrong_family,
+              declare_the_wrong_family_in_the_embedded_json)
 ASKING = (negative_peak_width, unit_swapped_for_another,
           data_origin_not_permitted)
 ALL_MUTATIONS = MECHANICAL + ASKING
@@ -203,6 +220,7 @@ def test_the_unmutated_bundle_is_clean():
     (negative_peak_width,           "R3_PAYLOAD_CONTRACT"),
     (unit_swapped_for_another,      "R3_PAYLOAD_CONTRACT"),
     (data_origin_not_permitted,     "R3_PAYLOAD_CONTRACT"),
+    (declare_the_wrong_family_in_the_embedded_json, "R5B_GRAPH_JSON"),
 ], ids=lambda v: getattr(v, "__name__", v))
 def test_a_mutation_is_reported_and_classified(tmp_path, mutation,
                                                expected_class):
@@ -408,6 +426,11 @@ def test_removing_the_contract_pointer_is_invisible_offline(tmp_path):
     that catches it lives in SQL, so today it is discoverable only with --db.
     An offline "nothing to decide" on this bundle is therefore not a clean
     bill of health, and the probe already says so in its own output.
+
+    Covered with --db in tests/test_db_mutations.py, which asserts the R4
+    CARDINALITY rules do catch it. The two tests are a pair: this one records
+    that the offline pass cannot see it, that one records that the database
+    can. If this test ever fails, update both.
     """
     rejections = probe(mutate(tmp_path, remove_the_payload_profile_triples))
     assert rejections == [], (

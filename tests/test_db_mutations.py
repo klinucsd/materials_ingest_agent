@@ -230,3 +230,38 @@ def test_a_clean_bundle_is_clean_against_the_database_too():
     assert probe(BUNDLES / UNLOADED, use_db=True) == [], (
         f"{UNLOADED} is not committed in {PROBE_DB} and its contract is "
         f"approved there, so the DB-backed pass should find nothing")
+
+
+@needs_db
+def test_removing_the_contract_pointer_is_caught_with_db(tmp_path):
+    """T4/R4, and the other half of a gap the offline suite pins.
+
+    `test_removing_the_contract_pointer_is_invisible_offline` in
+    tests/test_mutations.py asserts that dropping the `payloadProfile` triples
+    produces NOTHING offline. That was true when written and is still true:
+    the rules that catch it are SQL CARDINALITY rules. That test records the
+    gap; this one closes it, which only became possible once there was a
+    database to probe against that does not already hold the known-good load.
+
+    The two are a pair. If the offline one ever starts finding this, update
+    both rather than deleting either.
+    """
+    bundle = tmp_path / "bundle"
+    shutil.copytree(BUNDLES / UNLOADED, bundle)
+    ttl = bundle / "records.ttl"
+    ttl.write_text("\n".join(
+        line for line in ttl.read_text().splitlines()
+        if not (line.strip().startswith("fm:payloadProfile ex:")
+                and line.strip().endswith(";"))) + "\n")
+
+    assert probe(bundle, use_db=False) == [], (
+        "the offline pass now catches a missing payloadProfile -- that is an "
+        "improvement, but the offline test pins it as a gap, so update both")
+
+    verdicts = [classify(r) for r in probe(bundle, use_db=True)]
+    assert verdicts, "a missing payloadProfile was not caught even with --db"
+    classes = {v["class"] for v in verdicts}
+    assert "R4_GRAPH_SHAPE" in classes, (
+        f"expected the CARDINALITY rules to fire; got {sorted(classes)}")
+    assert "UNCLASSIFIED" not in classes, (
+        "a rejection fell through the taxonomy")
