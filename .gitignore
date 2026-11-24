@@ -27,6 +27,10 @@ docs/
 .pgpass
 .venv/
 .venv-kit/
+.venv-agent/
+# Built from kit-venv.lock with one package changed, to move the validator
+# fingerprint without touching .venv-kit. See tests/test_r2_fingerprint.py.
+.venv-r2/
 
 # Python
 __pycache__/

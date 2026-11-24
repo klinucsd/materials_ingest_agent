@@ -99,7 +99,37 @@ def attach(record: dict) -> dict:
 
 
 def _question_text(record: dict, message: str, where: str) -> str:
+    """Ask the question this rejection actually raises.
+
+    Not every rejection is about a VALUE. Asking "what should it be?" about a
+    validator fingerprint, a database privilege or a sealed record is
+    nonsense: nothing in the bundle should change, and an operator sent that
+    question either answers it wrongly or learns to skim them. Found while
+    writing the R2 mutation on 2026-11-24, where the bundle is perfectly valid
+    and only the environment moved.
+
+    So the phrasing follows the decision type, which already encodes whose
+    decision it is and what kind of act resolves it. `why_classified` carries
+    the specifics either way.
+    """
     bundle = record.get("bundle") or "the bundle"
+    at = f" (at {where})" if where else ""
+    kind = record.get("decision_type")
+    why = record.get("why_classified") or ""
+
+    if kind == "owner_approval":
+        return (f"{bundle}: {message}{at}. This is the database owner's to "
+                f"resolve, and the act is append-only. {why} "
+                f"How should we proceed?")
+    if kind == "contract_authoring":
+        return (f"{bundle}: {message}{at}. No implemented contract covers "
+                f"this. {why} Should a contract be authored for it, or is it "
+                f"out of scope for now?")
+    if kind == "escalate":
+        return (f"{bundle}: {message}{at}. This needs a judgement this tool "
+                f"should not make. {why} What should happen?")
+    # data_fix: a value IS at issue, and this is the wording that has been
+    # sent to a data provider, so it stays as it is.
     if where:
         return (f"{bundle}: {message} (at {where}). The contract does not "
                 f"determine the right value here. What should it be, or "
